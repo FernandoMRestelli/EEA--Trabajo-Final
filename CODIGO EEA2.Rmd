@@ -1,0 +1,335 @@
+---
+title: "Trabajo video EEA"
+output: html_document
+date: "2024-12-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(openxlsx)
+library(readr)
+library(tidyverse)
+library(lubridate)
+
+setwd("/home/fernandomrestelli/buckets/b1/Competencia02/EEA")
+df_entrenamiento <- read.csv("dataset_TP1_final(3).csv")
+
+```
+```{r}
+
+library(dplyr)
+
+# Crear la nueva columna 'Target_final'
+df_entrenamiento <- df_entrenamiento %>%
+  mutate(Target_final = case_when(
+    Target %in% c('Graduado', 'En Curso') ~ 'No Desertó',
+    TRUE ~ 'Desertó'
+  ))
+
+
+table(df_entrenamiento$Target_final)
+
+
+colnames(df_entrenamiento)
+
+
+```
+```{r}
+# Cargar las librerías necesarias
+library(ggplot2)
+
+# Crear el gráfico
+ggplot(df_entrenamiento, aes(x = Target, y = `Edad.al.momento.de.la.inscripción`)) +
+  geom_boxplot() +
+  ggtitle('Edad.al.momento.de.la.inscripción') +
+  xlab('Target') +
+  ylab('Edad.al.momento.de.la.inscripción') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  
+  theme(panel.grid.major.y = element_line(color = "gray", linetype = "dotted"))
+```
+
+
+```{r}
+ggplot(df_entrenamiento, aes(x = Target, y = `Unidades.curriculares.2do.semestre..aprobadas.`)) +
+  geom_boxplot() +
+  ggtitle('Unidades.curriculares.2do.semestre..aprobadas.') +
+  xlab('Target') +
+  ylab('Unidades.curriculares.2do.semestre..aprobadas.') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  
+  theme(panel.grid.major.y = element_line(color = "gray", linetype = "dotted"))
+```
+```{r}
+ggplot(df_entrenamiento, aes(x = Target, y = `Nota.promedio.en.el.2do.semestre`)) +
+  geom_boxplot() +
+  ggtitle('Nota.promedio.en.el.2do.semestre') +
+  xlab('Target') +
+  ylab('Nota.promedio.en.el.2do.semestre') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  
+  theme(panel.grid.major.y = element_line(color = "gray", linetype = "dotted"))
+```
+
+
+```{r echo=TRUE, message=TRUE, warning=TRUE, paged.print=TRUE}
+# Cargar librerías necesarias
+# Cargar librerías necesarias
+
+library(MLmetrics)
+install.packages("earth")  # Si aún no está instalado
+library(earth)
+
+
+# Cargar librerías necesarias
+library(caret)       # Para train y trainControl
+library(e1071)       # Para métodos de clasificación
+library(dplyr)       # Para manipulación de datos
+library(glmnet)      # Para Regresión Logística
+library(ROSE)        # Para balancear datos si es necesario
+
+# Variables numéricas y categóricas
+variables_numericas <- c(
+  'Sexo', 'Estado.Civil', 'Orden.de.prioridad',
+  'Cualificación.promedio.de.estudios.previos',
+  'Puntaje.en.examen.de.ingreso', 'Edad.al.momento.de.la.inscripción'
+)
+variables_categoricas <- c('Carrera', 'Ocupación.de.la.Madre', 'Ocupación.del.Padre')
+
+# One-Hot Encoding para variables categóricas
+df_encoded <- dummyVars(~ ., data = df_entrenamiento[, variables_categoricas]) %>%
+  predict(newdata = df_entrenamiento) %>%
+  as.data.frame()
+
+# Combinar variables numéricas con las variables codificadas
+df_encoded <- cbind(
+  df_entrenamiento[, setdiff(names(df_entrenamiento), variables_categoricas)],
+  df_encoded
+)
+
+# Preparar variable objetivo
+df_encoded$Target_final <- as.factor(df_encoded$Target_final)
+levels(df_encoded$Target_final) <- gsub("\\.", "_", levels(df_encoded$Target_final))
+y <- df_encoded$Target_final
+X <- df_encoded %>% select(-Target, -Target_final)
+
+# Asegurar que los niveles de la variable objetivo sean válidos
+levels(y) <- make.names(levels(y))
+
+print("Niveles de la variable objetivo (válidos):")
+print(levels(y))
+
+# Dividir los datos en entrenamiento (80%) y prueba (20%)
+set.seed(42)
+train_indices <- createDataPartition(y, p = 0.8, list = FALSE)
+
+# Manejar posible error en la partición
+if (length(train_indices) == 0) stop("Error: No se generaron índices de entrenamiento.")
+
+X_train <- X[train_indices, ]
+X_test <- X[-train_indices, ]
+y_train <- y[train_indices]
+y_test <- y[-train_indices]
+
+# Balancear datos si es necesario
+if (any(table(y_train) < 10)) {
+  train_data <- cbind(X_train, Target_final = y_train)
+  train_data_balanced <- ROSE(Target_final ~ ., data = train_data, seed = 42)$data
+  X_train <- train_data_balanced %>% select(-Target_final)
+  y_train <- train_data_balanced$Target_final
+}
+
+# Escalar los datos
+scaler <- preProcess(X_train, method = c("center", "scale"))
+X_train <- predict(scaler, X_train)
+X_test <- predict(scaler, X_test)
+
+# Definir hiperparámetros para búsqueda en grilla
+grid <- expand.grid(
+  alpha = c(0, 0.5, 1),
+  lambda = seq(0.01, 0.1, by = 0.01)
+)
+
+# Crear control de entrenamiento
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  summaryFunction = multiClassSummary,
+  classProbs = TRUE
+)
+
+# Entrenar modelo de Regresión Logística
+log_reg_model <- train(
+  x = X_train,
+  y = y_train,
+  method = "glmnet",
+  trControl = train_control,
+  tuneGrid = grid,
+  metric = "F1",
+  weights = ifelse(y_train == "Desertó", 1.5, 1)
+)
+
+# Evaluar el modelo
+y_pred_optimizado <- predict(log_reg_model, X_test)
+confusion_matrix <- confusionMatrix(y_pred_optimizado, y_test)
+
+# Resultados
+print("Mejores hiperparámetros encontrados:")
+print(log_reg_model$bestTune)
+
+print("Matriz de confusión:")
+print(confusion_matrix)
+
+# Extraer la tabla de la matriz de confusión
+conf_matrix <- confusion_matrix$table
+
+# Calcular Precision, Recall y F1-Score
+precision <- conf_matrix[2, 2] / sum(conf_matrix[2, ])  # TP / (TP + FP)
+recall <- conf_matrix[2, 2] / sum(conf_matrix[, 2])     # TP / (TP + FN)
+f1 <- 2 * (precision * recall) / (precision + recall)   # F1-Score
+
+# Imprimir métricas
+cat("Métricas para el modelo de Regresión Logística:\n")
+cat(sprintf("Precision: %.2f\n", precision))
+cat(sprintf("Recall: %.2f\n", recall))
+cat(sprintf("F1-Score: %.2f\n", f1))
+
+
+
+
+
+
+ #Para el MARS reduzco al 20% el dataset. Ya que se hace muy extenso el entrenamiento. 
+
+# Proporción de la muestra
+set.seed(123)  # Semilla para reproducibilidad
+proporcion_muestra <- 0.08  # 20% del dataset
+
+# Dividir los datos por clases
+clase_deserto <- which(y_train == "Desertó")
+clase_no_deserto <- which(y_train != "Desertó")
+
+# Seleccionar muestras balanceadas
+muestra_deserto <- sample(clase_deserto, size = round(length(clase_deserto) * proporcion_muestra))
+muestra_no_deserto <- sample(clase_no_deserto, size = round(length(clase_no_deserto) * proporcion_muestra))
+
+# Combinar las muestras
+indices_muestra <- c(muestra_deserto, muestra_no_deserto)
+X_train_reducido <- X_train[indices_muestra, ]
+y_train_reducido <- y_train[indices_muestra]
+
+# Verificar el balance
+print("Balance de clases en el dataset reducido:")
+print(table(y_train_reducido))
+
+# Crear control de entrenamiento con validación cruzada básica y verbose
+train_control <- trainControl(
+  method = "cv",          # Validación cruzada simple
+  number = 3,             # Reducir a 3 pliegues
+  summaryFunction = multiClassSummary,
+  classProbs = TRUE,
+  verboseIter = TRUE      # Mostrar progreso del entrenamiento
+)
+
+mars_model <- train(
+  x = X_train_reducido,       # Variables predictoras
+  y = y_train_reducido,       # Variable objetivo
+  degree = 1,                 # Grado de interacción (lineal, sin interacciones)
+  nprune = 18,                # Número de términos (splines)
+  weights = ifelse(y_train_reducido == "Desertó", 1.5, 1)  # Opcional: pesos para clases desbalanceadas
+)
+
+# Evaluar el modelo con datos de prueba
+y_pred_mars <- predict(mars_model, X_test)
+
+# Matriz de confusión para evaluar el rendimiento
+confusion_matrix_mars <- confusionMatrix(y_pred_mars, y_test)
+print("Matriz de confusión para MARS:")
+print(confusion_matrix_mars)
+
+# Definir el directorio y el nombre del archivo
+output_dir <- "~/buckets/b1/Competencia02/EEA"  # Cambia esta ruta
+output_pdf <- file.path(output_dir, "mars_confusion_matrix.pdf")
+
+# Crear el directorio si no existe
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Abrir el dispositivo gráfico PDF
+pdf(file = output_pdf, width = 8, height = 10)
+
+
+# Calcular la matriz de confusión
+confusion_matrix_mars <- confusionMatrix(y_pred_mars, y_test)
+
+# Capturar la salida de la matriz de confusión
+output_text <- capture.output({
+  print("Matriz de confusión para MARS:")
+  print(confusion_matrix_mars)
+})
+
+# Imprimir el texto capturado en el PDF
+cat(paste(output_text, collapse = "\n"))
+
+# Cerrar el dispositivo PDF
+dev.off()
+
+# Confirmación
+cat("La matriz de confusión ha sido guardada en:", output_pdf, "\n")
+
+
+# Obtener la importancia de las variables
+feature_importance <- varImp(mars_model, scale = FALSE)
+
+# Ordenar las variables por importancia
+sorted_importance <- feature_importance$importance[order(-feature_importance$importance$Overall), , drop = FALSE]
+
+# Seleccionar solo el 50% superior de las variables
+top_50_percent <- sorted_importance[1:ceiling(nrow(sorted_importance) / 2), , drop = FALSE]
+
+
+print(top_50_percent)
+# Crear el gráfico con las variables más importantes
+output_file <- file.path(output_dir, "mars_feature_importance_top_50.jpg")
+
+# Crear el directorio si no existe
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Guardar el gráfico en un archivo JPEG
+jpeg(filename = output_file, width = 800, height = 600, quality = 100)
+
+# Generar el gráfico con solo las variables más importantes
+barplot(top_50_percent$Overall, 
+        names.arg = rownames(top_50_percent), 
+        las = 2, 
+        main = "Importancia de las Variables (MARS) - Top 50%",
+        col = "skyblue", 
+        cex.names = 0.6,
+        horiz = FALSE)
+par(mar= c(8,4,4,2))
+
+# Cerrar el dispositivo gráfico
+dev.off()
+
+# Mensaje de confirmación
+cat("El gráfico de importancia de las variables (50% superior) ha sido guardado en:", output_file, "\n")
+
+# Mensaje de confirmación
+cat("El gráfico de importancia de las variables (50% superior) ha sido guardado en:", output_file, "\n")
+
+
+
+
+
+```
+
+
+
+
+
+
